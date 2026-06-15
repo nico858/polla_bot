@@ -70,7 +70,9 @@ const GROUP_RESOLVE_BACKGROUND_MINUTES = Number(
     process.env.GROUP_RESOLVE_BACKGROUND_MINUTES || 3
 );
 const GROUP_LIST_TIMEOUT_MS = Number(process.env.GROUP_LIST_TIMEOUT_MS || 20000);
-const AUTO_LOG_GROUPS_ON_READY = (process.env.AUTO_LOG_GROUPS_ON_READY || 'true') === 'true';
+const GROUP_LIST_RETRIES = Number(process.env.GROUP_LIST_RETRIES || 2);
+const CLIENT_READY_WAIT_MS = Number(process.env.CLIENT_READY_WAIT_MS || 30000);
+const AUTO_LOG_GROUPS_ON_READY = (process.env.AUTO_LOG_GROUPS_ON_READY || 'false') === 'true';
 
 const alreadySentMatchReminderKeys = new Set();
 let cachedGroupId = GROUP_ID;
@@ -78,6 +80,7 @@ let latestQrText = '';
 let latestQrGeneratedAt = null;
 let schedulesInitialized = false;
 let isReinitializingClient = false;
+let isClientReady = false;
 let lastReinitAtMs = 0;
 let consecutiveSendFailures = 0;
 let groupResolvePromise = null;
@@ -90,6 +93,36 @@ const client = new Client({
     authStrategy: new LocalAuth({ clientId: 'polla-bot' }),
     puppeteer: puppeteerConfig
 });
+
+function waitForClientReady(timeoutMs = CLIENT_READY_WAIT_MS) {
+    if (isClientReady) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+            cleanup();
+            reject(new Error('Cliente de WhatsApp no esta listo todavia.'));
+        }, timeoutMs);
+
+        const onReady = () => {
+            cleanup();
+            resolve();
+        };
+
+        const onDisconnected = () => {
+            // Keep waiting; disconnected can happen before reconnect.
+        };
+
+        const cleanup = () => {
+            clearTimeout(timeoutId);
+            client.off('ready', onReady);
+            client.off('disconnected', onDisconnected);
+        };
+
+        client.on('ready', onReady);
+        client.on('disconnected', onDisconnected);
+    });
+}
 
 function startHealthServer() {
     const app = express();
@@ -335,19 +368,42 @@ async function getGroupChat() {
 }
 
 async function listAvailableGroups() {
-    const chats = await Promise.race([
-        client.getChats(),
-        new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Timeout listando chats/grupos.')), GROUP_LIST_TIMEOUT_MS)
-        )
-    ]);
+    await waitForClientReady();
 
-    return chats
-        .filter((chat) => chat.isGroup)
-        .map((group) => ({
-            name: String(group.name || '').trim(),
-            id: group.id?._serialized || ''
-        }));
+    if (!client || typeof client.getChats !== 'function') {
+        throw new Error('Cliente de WhatsApp aun no inicializado correctamente.');
+    }
+
+    let lastError = null;
+    for (let attempt = 1; attempt <= GROUP_LIST_RETRIES + 1; attempt += 1) {
+        try {
+            const chats = await Promise.race([
+                client.getChats(),
+                new Promise((_, reject) =>
+                    setTimeout(
+                        () => reject(new Error('Timeout listando chats/grupos.')),
+                        GROUP_LIST_TIMEOUT_MS
+                    )
+                )
+            ]);
+
+            return chats
+                .filter((chat) => chat.isGroup)
+                .map((group) => ({
+                    name: String(group.name || '').trim(),
+                    id: group.id?._serialized || ''
+                }));
+        } catch (error) {
+            lastError = error;
+            const hasMoreAttempts = attempt <= GROUP_LIST_RETRIES;
+            if (!hasMoreAttempts) {
+                break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+    }
+
+    throw lastError || new Error('No se pudieron listar grupos.');
 }
 
 async function resolveAndCacheGroupId() {
@@ -411,6 +467,7 @@ async function maybeReinitializeClient(reason) {
     }
 
     isReinitializingClient = true;
+    isClientReady = false;
     lastReinitAtMs = now;
     console.warn(`Reinicializando cliente por: ${reason}`);
 
@@ -634,6 +691,7 @@ client.on('qr', (qr) => {
 });
 
 client.on('ready', () => {
+    isClientReady = true;
     console.log('Bot conectado y listo.');
     setTimeout(() => {
         resolveAndCacheGroupId().catch((error) => {
@@ -660,10 +718,12 @@ client.on('authenticated', () => {
 });
 
 client.on('auth_failure', (message) => {
+    isClientReady = false;
     console.error('Fallo de autenticacion:', message);
 });
 
 client.on('disconnected', (reason) => {
+    isClientReady = false;
     console.warn('Cliente desconectado:', reason);
 });
 

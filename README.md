@@ -90,3 +90,5 @@ y accede con:
 Para listar grupos con token:
 
 `https://tu-servicio.up.railway.app/groups?token=un_token_largo`
+
+Si `/groups` falla justo al arrancar, espera 20-40 segundos y vuelve a intentar.
