@@ -75,6 +75,7 @@ MATCHES_REFRESH_MINUTES=60
 En Railway, el QR en logs puede verse dañado. Este bot tambien expone:
 
 - `GET /qr`: muestra el QR en formato imagen para escanear desde navegador.
+- `GET /groups`: lista los grupos detectados con su `id` para copiar en `WHATSAPP_GROUP_ID`.
 
 Si quieres proteger esa ruta, define:
 
@@ -85,3 +86,7 @@ QR_VIEW_TOKEN=un_token_largo
 y accede con:
 
 `https://tu-servicio.up.railway.app/qr?token=un_token_largo`
+
+Para listar grupos con token:
+
+`https://tu-servicio.up.railway.app/groups?token=un_token_largo`

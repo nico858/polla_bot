@@ -69,6 +69,8 @@ const GROUP_RESOLVE_RETRIES = Number(process.env.GROUP_RESOLVE_RETRIES || 2);
 const GROUP_RESOLVE_BACKGROUND_MINUTES = Number(
     process.env.GROUP_RESOLVE_BACKGROUND_MINUTES || 3
 );
+const GROUP_LIST_TIMEOUT_MS = Number(process.env.GROUP_LIST_TIMEOUT_MS || 20000);
+const AUTO_LOG_GROUPS_ON_READY = (process.env.AUTO_LOG_GROUPS_ON_READY || 'true') === 'true';
 
 const alreadySentMatchReminderKeys = new Set();
 let cachedGroupId = GROUP_ID;
@@ -78,7 +80,7 @@ let schedulesInitialized = false;
 let isReinitializingClient = false;
 let lastReinitAtMs = 0;
 let consecutiveSendFailures = 0;
-let isResolvingGroupId = false;
+let groupResolvePromise = null;
 let internetMatchesCache = {
     fetchedAt: null,
     matches: []
@@ -138,6 +140,23 @@ function startHealthServer() {
 </body>
 </html>`
         );
+    });
+
+    app.get('/groups', async (req, res) => {
+        if (!ensureQrAccess(req, res)) {
+            return;
+        }
+        try {
+            const groups = await listAvailableGroups();
+            res.status(200).json({
+                total: groups.length,
+                groups
+            });
+        } catch (error) {
+            res.status(500).json({
+                error: `No se pudieron listar grupos: ${error.message}`
+            });
+        }
     });
 
     app.listen(PORT, () => {
@@ -315,17 +334,32 @@ async function getGroupChat() {
     return group;
 }
 
+async function listAvailableGroups() {
+    const chats = await Promise.race([
+        client.getChats(),
+        new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Timeout listando chats/grupos.')), GROUP_LIST_TIMEOUT_MS)
+        )
+    ]);
+
+    return chats
+        .filter((chat) => chat.isGroup)
+        .map((group) => ({
+            name: String(group.name || '').trim(),
+            id: group.id?._serialized || ''
+        }));
+}
+
 async function resolveAndCacheGroupId() {
     if (cachedGroupId) {
         return cachedGroupId;
     }
 
-    if (isResolvingGroupId) {
-        throw new Error('Resolucion de groupId en progreso.');
+    if (groupResolvePromise) {
+        return groupResolvePromise;
     }
 
-    isResolvingGroupId = true;
-    try {
+    groupResolvePromise = (async () => {
         let lastError = null;
         for (let attempt = 1; attempt <= GROUP_RESOLVE_RETRIES + 1; attempt += 1) {
             try {
@@ -352,8 +386,12 @@ async function resolveAndCacheGroupId() {
             }
         }
         throw lastError || new Error('No se pudo resolver groupId.');
+    })();
+
+    try {
+        return await groupResolvePromise;
     } finally {
-        isResolvingGroupId = false;
+        groupResolvePromise = null;
     }
 }
 
@@ -430,13 +468,26 @@ async function sendGroupMessage(message) {
                 messageText.includes('Timeout resolviendo grupo por nombre.');
             const isStaleGroup = isLikelyStaleGroupError(messageText);
             const hasMoreAttempts = attempt <= SEND_MESSAGE_RETRIES;
+            const isResolveIssue =
+                messageText.includes('No se encontro el grupo') ||
+                messageText.includes('Timeout resolviendo groupId.') ||
+                messageText.includes('Timeout resolviendo grupo por nombre.') ||
+                messageText.includes('Timeout listando chats/grupos.');
+            const isSendPipelineIssue =
+                messageText.includes('Runtime.callFunctionOn timed out') ||
+                messageText.includes('Target closed') ||
+                messageText.includes('detached Frame');
 
             if (isStaleGroup) {
                 cachedGroupId = '';
                 console.warn('Se detecto groupId invalido; se reintentara resolviendo de nuevo.');
             }
 
-            if (consecutiveSendFailures >= MAX_CONSECUTIVE_SEND_FAILURES) {
+            if (
+                consecutiveSendFailures >= MAX_CONSECUTIVE_SEND_FAILURES &&
+                !isResolveIssue &&
+                isSendPipelineIssue
+            ) {
                 maybeReinitializeClient(
                     `${consecutiveSendFailures} fallos consecutivos al enviar mensajes`
                 ).catch(() => {});
@@ -457,8 +508,7 @@ async function sendGroupMessage(message) {
 }
 
 async function printAvailableGroups() {
-    const chats = await client.getChats();
-    const groups = chats.filter((chat) => chat.isGroup);
+    const groups = await listAvailableGroups();
 
     if (!groups.length) {
         console.log('No se encontraron grupos en esta sesion.');
@@ -467,7 +517,7 @@ async function printAvailableGroups() {
 
     console.log('Grupos detectados (nombre -> id):');
     for (const group of groups) {
-        console.log(`- ${group.name} -> ${group.id._serialized}`);
+        console.log(`- ${group.name} -> ${group.id}`);
     }
 }
 
@@ -551,7 +601,7 @@ function scheduleBackgroundGroupResolver() {
     cron.schedule(
         `*/${GROUP_RESOLVE_BACKGROUND_MINUTES} * * * *`,
         async () => {
-            if (cachedGroupId || isReinitializingClient) {
+            if (cachedGroupId || isReinitializingClient || groupResolvePromise) {
                 return;
             }
             try {
@@ -590,7 +640,7 @@ client.on('ready', () => {
             console.warn('No se pudo resolver groupId al iniciar:', error.message);
         });
     }, 4000);
-    if (DEBUG_LIST_GROUPS) {
+    if (DEBUG_LIST_GROUPS || !cachedGroupId || AUTO_LOG_GROUPS_ON_READY) {
         printAvailableGroups().catch((error) => {
             console.error('No se pudieron listar los grupos:', error.message);
         });
