@@ -64,6 +64,11 @@ const MAX_CONSECUTIVE_SEND_FAILURES = Number(
     process.env.MAX_CONSECUTIVE_SEND_FAILURES || 3
 );
 const REINIT_COOLDOWN_MS = Number(process.env.REINIT_COOLDOWN_MS || 30000);
+const GROUP_RESOLVE_TIMEOUT_MS = Number(process.env.GROUP_RESOLVE_TIMEOUT_MS || 25000);
+const GROUP_RESOLVE_RETRIES = Number(process.env.GROUP_RESOLVE_RETRIES || 2);
+const GROUP_RESOLVE_BACKGROUND_MINUTES = Number(
+    process.env.GROUP_RESOLVE_BACKGROUND_MINUTES || 3
+);
 
 const alreadySentMatchReminderKeys = new Set();
 let cachedGroupId = GROUP_ID;
@@ -73,6 +78,7 @@ let schedulesInitialized = false;
 let isReinitializingClient = false;
 let lastReinitAtMs = 0;
 let consecutiveSendFailures = 0;
+let isResolvingGroupId = false;
 let internetMatchesCache = {
     fetchedAt: null,
     matches: []
@@ -294,7 +300,10 @@ async function getGroupChat() {
     }
 
     const chats = await client.getChats();
-    const group = chats.find((chat) => chat.isGroup && chat.name === GROUP_NAME);
+    const normalizedTarget = GROUP_NAME.trim().toLowerCase();
+    const group = chats.find(
+        (chat) => chat.isGroup && String(chat.name || '').trim().toLowerCase() === normalizedTarget
+    );
 
     if (!group) {
         throw new Error(
@@ -311,10 +320,41 @@ async function resolveAndCacheGroupId() {
         return cachedGroupId;
     }
 
-    const group = await getGroupChat();
-    cachedGroupId = group.id._serialized;
-    console.log(`Grupo objetivo resuelto: ${cachedGroupId}`);
-    return cachedGroupId;
+    if (isResolvingGroupId) {
+        throw new Error('Resolucion de groupId en progreso.');
+    }
+
+    isResolvingGroupId = true;
+    try {
+        let lastError = null;
+        for (let attempt = 1; attempt <= GROUP_RESOLVE_RETRIES + 1; attempt += 1) {
+            try {
+                const group = await Promise.race([
+                    getGroupChat(),
+                    new Promise((_, reject) =>
+                        setTimeout(
+                            () => reject(new Error('Timeout resolviendo grupo por nombre.')),
+                            GROUP_RESOLVE_TIMEOUT_MS
+                        )
+                    )
+                ]);
+
+                cachedGroupId = group.id._serialized;
+                console.log(`Grupo objetivo resuelto: ${cachedGroupId}`);
+                return cachedGroupId;
+            } catch (error) {
+                lastError = error;
+                const hasMoreAttempts = attempt <= GROUP_RESOLVE_RETRIES;
+                if (!hasMoreAttempts) {
+                    break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 1200));
+            }
+        }
+        throw lastError || new Error('No se pudo resolver groupId.');
+    } finally {
+        isResolvingGroupId = false;
+    }
 }
 
 function isLikelyStaleGroupError(messageText) {
@@ -386,7 +426,8 @@ async function sendGroupMessage(message) {
             const isTimeout =
                 messageText.includes('Runtime.callFunctionOn timed out') ||
                 messageText.includes('Timeout resolviendo groupId.') ||
-                messageText.includes('Timeout enviando mensaje al grupo.');
+                messageText.includes('Timeout enviando mensaje al grupo.') ||
+                messageText.includes('Timeout resolviendo grupo por nombre.');
             const isStaleGroup = isLikelyStaleGroupError(messageText);
             const hasMoreAttempts = attempt <= SEND_MESSAGE_RETRIES;
 
@@ -469,7 +510,6 @@ function scheduleMatchReminders() {
         async () => {
             const matches = await getMatches();
             const now = dayjs().tz(TIMEZONE).startOf('minute');
-            const target = now.add(MATCH_REMINDER_MINUTES_BEFORE, 'minute');
 
             for (const match of matches) {
                 const kickoff = parseKickoff(match.kickoff).startOf('minute');
@@ -507,6 +547,26 @@ function scheduleMatchReminders() {
     );
 }
 
+function scheduleBackgroundGroupResolver() {
+    cron.schedule(
+        `*/${GROUP_RESOLVE_BACKGROUND_MINUTES} * * * *`,
+        async () => {
+            if (cachedGroupId || isReinitializingClient) {
+                return;
+            }
+            try {
+                await resolveAndCacheGroupId();
+            } catch (error) {
+                console.warn('Resolucion en segundo plano de groupId fallo:', error.message);
+            }
+        },
+        { timezone: TIMEZONE }
+    );
+    console.log(
+        `Resolver de groupId en segundo plano activo (cada ${GROUP_RESOLVE_BACKGROUND_MINUTES} min).`
+    );
+}
+
 client.on('qr', (qr) => {
     latestQrText = qr;
     latestQrGeneratedAt = new Date();
@@ -525,9 +585,11 @@ client.on('qr', (qr) => {
 
 client.on('ready', () => {
     console.log('Bot conectado y listo.');
-    resolveAndCacheGroupId().catch((error) => {
-        console.warn('No se pudo resolver groupId al iniciar:', error.message);
-    });
+    setTimeout(() => {
+        resolveAndCacheGroupId().catch((error) => {
+            console.warn('No se pudo resolver groupId al iniciar:', error.message);
+        });
+    }, 4000);
     if (DEBUG_LIST_GROUPS) {
         printAvailableGroups().catch((error) => {
             console.error('No se pudieron listar los grupos:', error.message);
@@ -536,6 +598,7 @@ client.on('ready', () => {
     if (!schedulesInitialized) {
         scheduleDailyReminder();
         scheduleMatchReminders();
+        scheduleBackgroundGroupResolver();
         schedulesInitialized = true;
     } else {
         console.log('Cliente reconectado; cron jobs existentes se mantienen activos.');
