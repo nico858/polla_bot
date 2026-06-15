@@ -53,9 +53,12 @@ const ESPN_LEAGUE_SLUG = process.env.ESPN_LEAGUE_SLUG || 'fifa.world';
 const MATCHES_DAYS_AHEAD = Number(process.env.MATCHES_DAYS_AHEAD || 7);
 const MATCHES_REFRESH_MINUTES = Number(process.env.MATCHES_REFRESH_MINUTES || 60);
 const MATCHES_FILE = path.join(__dirname, 'matches.json');
+const QR_VIEW_TOKEN = process.env.QR_VIEW_TOKEN || '';
 
 const alreadySentMatchReminderKeys = new Set();
 let cachedGroupId = GROUP_ID;
+let latestQrText = '';
+let latestQrGeneratedAt = null;
 let internetMatchesCache = {
     fetchedAt: null,
     matches: []
@@ -68,12 +71,53 @@ const client = new Client({
 
 function startHealthServer() {
     const app = express();
+
+    function ensureQrAccess(req, res) {
+        if (!QR_VIEW_TOKEN) {
+            return true;
+        }
+        if (req.query.token === QR_VIEW_TOKEN) {
+            return true;
+        }
+        res.status(401).send('No autorizado para ver QR.');
+        return false;
+    }
+
     app.get('/health', (req, res) => {
         res.status(200).json({
             status: 'ok',
             service: 'polla-bot',
             now: dayjs().tz(TIMEZONE).format()
         });
+    });
+
+    app.get('/qr', (req, res) => {
+        if (!ensureQrAccess(req, res)) {
+            return;
+        }
+        if (!latestQrText) {
+            res.status(404).send('No hay QR activo en este momento.');
+            return;
+        }
+
+        const encoded = encodeURIComponent(latestQrText);
+        const imageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=420x420&data=${encoded}`;
+        const generatedAt = latestQrGeneratedAt
+            ? dayjs(latestQrGeneratedAt).tz(TIMEZONE).format('DD/MM HH:mm:ss')
+            : 'desconocido';
+        res.status(200).send(
+            `<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>QR WhatsApp Bot</title></head>
+<body style="font-family:Arial,sans-serif;padding:24px">
+  <h2>QR de WhatsApp Bot</h2>
+  <p>Generado: ${generatedAt} (${TIMEZONE})</p>
+  <p>Escanea este QR desde WhatsApp -> Dispositivos vinculados.</p>
+  <img src="${imageUrl}" alt="QR WhatsApp" />
+  <p style="font-size:12px;color:#666">El QR expira rapido. Si no funciona, refresca la pagina.</p>
+</body>
+</html>`
+        );
     });
 
     app.listen(PORT, () => {
@@ -341,8 +385,19 @@ function scheduleMatchReminders() {
 }
 
 client.on('qr', (qr) => {
+    latestQrText = qr;
+    latestQrGeneratedAt = new Date();
     qrcode.generate(qr, { small: true });
     console.log('Escanea el QR para iniciar sesion en WhatsApp Web.');
+    const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=420x420&data=${encodeURIComponent(
+        qr
+    )}`;
+    console.log(`Si en logs no se ve bien, abre esta URL del QR: ${qrImageUrl}`);
+    if (QR_VIEW_TOKEN) {
+        console.log(`Tambien puedes usar /qr?token=*** en la URL publica del servicio.`);
+    } else {
+        console.log(`Tambien puedes usar /qr en la URL publica del servicio.`);
+    }
 });
 
 client.on('ready', () => {

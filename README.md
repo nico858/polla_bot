@@ -69,3 +69,19 @@ MATCHES_REFRESH_MINUTES=60
 
 - `MATCH_SOURCE=local` (default): usa `matches.json`.
 - `MATCH_SOURCE=espn`: consulta ESPN y actualiza horarios periodicamente.
+
+## 4) QR legible en Railway
+
+En Railway, el QR en logs puede verse dañado. Este bot tambien expone:
+
+- `GET /qr`: muestra el QR en formato imagen para escanear desde navegador.
+
+Si quieres proteger esa ruta, define:
+
+```env
+QR_VIEW_TOKEN=un_token_largo
+```
+
+y accede con:
+
+`https://tu-servicio.up.railway.app/qr?token=un_token_largo`
