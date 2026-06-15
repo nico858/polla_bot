@@ -1,0 +1,26 @@
+[
+  {
+    "id": "ejemplo-001",
+    "home": "Argentina",
+    "away": "Brasil",
+    "homeCode": "AR",
+    "awayCode": "BR",
+    "kickoff": "2026-06-15T16:00:00"
+  },
+  {
+    "id": "ejemplo-002",
+    "home": "Colombia",
+    "away": "Mexico",
+    "homeCode": "CO",
+    "awayCode": "MX",
+    "kickoff": "2026-06-15T02:15:00"
+  },
+  {
+    "id": "ejemplo-003",
+    "home": "Espana",
+    "away": "Alemania",
+    "homeCode": "ES",
+    "awayCode": "DE",
+    "kickoff": "2026-06-15T02:35:00"
+  }
+]
