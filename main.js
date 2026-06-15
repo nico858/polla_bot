@@ -54,13 +54,25 @@ const MATCHES_DAYS_AHEAD = Number(process.env.MATCHES_DAYS_AHEAD || 7);
 const MATCHES_REFRESH_MINUTES = Number(process.env.MATCHES_REFRESH_MINUTES || 60);
 const MATCHES_FILE = path.join(__dirname, 'matches.json');
 const QR_VIEW_TOKEN = process.env.QR_VIEW_TOKEN || '';
-const SEND_MESSAGE_RETRIES = Number(process.env.SEND_MESSAGE_RETRIES || 2);
-const SEND_MESSAGE_RETRY_DELAY_MS = Number(process.env.SEND_MESSAGE_RETRY_DELAY_MS || 5000);
+const SEND_MESSAGE_RETRIES = Number(process.env.SEND_MESSAGE_RETRIES || 1);
+const SEND_MESSAGE_RETRY_DELAY_MS = Number(process.env.SEND_MESSAGE_RETRY_DELAY_MS || 1500);
+const SEND_MESSAGE_ATTEMPT_TIMEOUT_MS = Number(
+    process.env.SEND_MESSAGE_ATTEMPT_TIMEOUT_MS || 8000
+);
+const MATCH_REMINDER_GRACE_MINUTES = Number(process.env.MATCH_REMINDER_GRACE_MINUTES || 2);
+const MAX_CONSECUTIVE_SEND_FAILURES = Number(
+    process.env.MAX_CONSECUTIVE_SEND_FAILURES || 3
+);
+const REINIT_COOLDOWN_MS = Number(process.env.REINIT_COOLDOWN_MS || 30000);
 
 const alreadySentMatchReminderKeys = new Set();
 let cachedGroupId = GROUP_ID;
 let latestQrText = '';
 let latestQrGeneratedAt = null;
+let schedulesInitialized = false;
+let isReinitializingClient = false;
+let lastReinitAtMs = 0;
+let consecutiveSendFailures = 0;
 let internetMatchesCache = {
     fetchedAt: null,
     matches: []
@@ -294,20 +306,100 @@ async function getGroupChat() {
     return group;
 }
 
+async function resolveAndCacheGroupId() {
+    if (cachedGroupId) {
+        return cachedGroupId;
+    }
+
+    const group = await getGroupChat();
+    cachedGroupId = group.id._serialized;
+    console.log(`Grupo objetivo resuelto: ${cachedGroupId}`);
+    return cachedGroupId;
+}
+
+function isLikelyStaleGroupError(messageText) {
+    return (
+        messageText.includes('wid error') ||
+        messageText.includes('not a whatsapp user') ||
+        messageText.includes('invalid wid')
+    );
+}
+
+async function maybeReinitializeClient(reason) {
+    const now = Date.now();
+    const inCooldown = now - lastReinitAtMs < REINIT_COOLDOWN_MS;
+    if (isReinitializingClient || inCooldown) {
+        return;
+    }
+
+    isReinitializingClient = true;
+    lastReinitAtMs = now;
+    console.warn(`Reinicializando cliente por: ${reason}`);
+
+    try {
+        await client.destroy();
+    } catch (error) {
+        console.warn('No se pudo destruir cliente antes de reiniciar:', error.message);
+    }
+
+    try {
+        client.initialize();
+    } catch (error) {
+        console.error('Error al reinicializar cliente:', error.message);
+    } finally {
+        isReinitializingClient = false;
+    }
+}
+
 async function sendGroupMessage(message) {
     let lastError = null;
 
     for (let attempt = 1; attempt <= SEND_MESSAGE_RETRIES + 1; attempt += 1) {
         try {
-            const group = await getGroupChat();
-            await group.sendMessage(message);
+            const groupId = await Promise.race([
+                resolveAndCacheGroupId(),
+                new Promise((_, reject) =>
+                    setTimeout(
+                        () => reject(new Error('Timeout resolviendo groupId.')),
+                        SEND_MESSAGE_ATTEMPT_TIMEOUT_MS
+                    )
+                )
+            ]);
+
+            await Promise.race([
+                client.sendMessage(groupId, message),
+                new Promise((_, reject) =>
+                    setTimeout(
+                        () => reject(new Error('Timeout enviando mensaje al grupo.')),
+                        SEND_MESSAGE_ATTEMPT_TIMEOUT_MS
+                    )
+                )
+            ]);
+
+            consecutiveSendFailures = 0;
             console.log(`Mensaje enviado al grupo (intento ${attempt}).`);
             return;
         } catch (error) {
             lastError = error;
             const messageText = String(error?.message || '');
-            const isTimeout = messageText.includes('Runtime.callFunctionOn timed out');
+            consecutiveSendFailures += 1;
+            const isTimeout =
+                messageText.includes('Runtime.callFunctionOn timed out') ||
+                messageText.includes('Timeout resolviendo groupId.') ||
+                messageText.includes('Timeout enviando mensaje al grupo.');
+            const isStaleGroup = isLikelyStaleGroupError(messageText);
             const hasMoreAttempts = attempt <= SEND_MESSAGE_RETRIES;
+
+            if (isStaleGroup) {
+                cachedGroupId = '';
+                console.warn('Se detecto groupId invalido; se reintentara resolviendo de nuevo.');
+            }
+
+            if (consecutiveSendFailures >= MAX_CONSECUTIVE_SEND_FAILURES) {
+                maybeReinitializeClient(
+                    `${consecutiveSendFailures} fallos consecutivos al enviar mensajes`
+                ).catch(() => {});
+            }
 
             if (!isTimeout || !hasMoreAttempts) {
                 throw error;
@@ -386,7 +478,13 @@ function scheduleMatchReminders() {
                     continue;
                 }
 
-                if (!kickoff.isSame(target)) {
+                const minutesUntilKickoff = kickoff.diff(now, 'minute');
+                const lowerBound = MATCH_REMINDER_MINUTES_BEFORE - MATCH_REMINDER_GRACE_MINUTES;
+                const withinReminderWindow =
+                    minutesUntilKickoff <= MATCH_REMINDER_MINUTES_BEFORE &&
+                    minutesUntilKickoff >= lowerBound;
+
+                if (!withinReminderWindow) {
                     continue;
                 }
 
@@ -427,13 +525,21 @@ client.on('qr', (qr) => {
 
 client.on('ready', () => {
     console.log('Bot conectado y listo.');
+    resolveAndCacheGroupId().catch((error) => {
+        console.warn('No se pudo resolver groupId al iniciar:', error.message);
+    });
     if (DEBUG_LIST_GROUPS) {
         printAvailableGroups().catch((error) => {
             console.error('No se pudieron listar los grupos:', error.message);
         });
     }
-    scheduleDailyReminder();
-    scheduleMatchReminders();
+    if (!schedulesInitialized) {
+        scheduleDailyReminder();
+        scheduleMatchReminders();
+        schedulesInitialized = true;
+    } else {
+        console.log('Cliente reconectado; cron jobs existentes se mantienen activos.');
+    }
 });
 
 client.on('authenticated', () => {
