@@ -54,6 +54,8 @@ const MATCHES_DAYS_AHEAD = Number(process.env.MATCHES_DAYS_AHEAD || 7);
 const MATCHES_REFRESH_MINUTES = Number(process.env.MATCHES_REFRESH_MINUTES || 60);
 const MATCHES_FILE = path.join(__dirname, 'matches.json');
 const QR_VIEW_TOKEN = process.env.QR_VIEW_TOKEN || '';
+const SEND_MESSAGE_RETRIES = Number(process.env.SEND_MESSAGE_RETRIES || 2);
+const SEND_MESSAGE_RETRY_DELAY_MS = Number(process.env.SEND_MESSAGE_RETRY_DELAY_MS || 5000);
 
 const alreadySentMatchReminderKeys = new Set();
 let cachedGroupId = GROUP_ID;
@@ -293,9 +295,32 @@ async function getGroupChat() {
 }
 
 async function sendGroupMessage(message) {
-    const group = await getGroupChat();
-    await group.sendMessage(message);
-    console.log('Mensaje enviado al grupo:', message);
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= SEND_MESSAGE_RETRIES + 1; attempt += 1) {
+        try {
+            const group = await getGroupChat();
+            await group.sendMessage(message);
+            console.log(`Mensaje enviado al grupo (intento ${attempt}).`);
+            return;
+        } catch (error) {
+            lastError = error;
+            const messageText = String(error?.message || '');
+            const isTimeout = messageText.includes('Runtime.callFunctionOn timed out');
+            const hasMoreAttempts = attempt <= SEND_MESSAGE_RETRIES;
+
+            if (!isTimeout || !hasMoreAttempts) {
+                throw error;
+            }
+
+            console.warn(
+                `Timeout enviando mensaje (intento ${attempt}). Reintentando en ${SEND_MESSAGE_RETRY_DELAY_MS}ms...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, SEND_MESSAGE_RETRY_DELAY_MS));
+        }
+    }
+
+    throw lastError;
 }
 
 async function printAvailableGroups() {

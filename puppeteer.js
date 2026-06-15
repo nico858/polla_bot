@@ -53,6 +53,7 @@ const executablePath = resolveChromeExecutablePath();
 const isWindows = process.platform === 'win32';
 const defaultHeadless = isWindows ? 'false' : 'true';
 const headless = (process.env.BOT_HEADLESS || defaultHeadless).toLowerCase() === 'true';
+const protocolTimeout = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS || 180000);
 
 if (executablePath) {
     console.log(`Usando navegador local para Puppeteer: ${executablePath}`);
@@ -63,10 +64,12 @@ if (executablePath) {
 }
 
 console.log(`Puppeteer headless=${headless}`);
+console.log(`Puppeteer protocolTimeout=${protocolTimeout}ms`);
 
 module.exports = {
     headless,
     executablePath,
+    protocolTimeout,
     args: [
         '--disable-dev-shm-usage',
         '--no-first-run',
