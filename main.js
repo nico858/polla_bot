@@ -11,6 +11,17 @@ require('dayjs/locale/es');
 const dotenv = require('dotenv');
 const puppeteerConfig = require('./puppeteer');
 
+function assertSupportedNodeVersion() {
+    const major = Number(process.versions.node.split('.')[0] || 0);
+    // whatsapp-web.js + puppeteer are notably unstable on Node 24 in this project.
+    if (major >= 24) {
+        console.error(
+            `Node ${process.versions.node} no es compatible con este bot. Usa Node 20 LTS o 22 LTS.`
+        );
+        process.exit(1);
+    }
+}
+
 function loadEnvFile() {
     const regularEnvPath = path.join(__dirname, '.env');
     const altEnvPath = path.join(__dirname, '-env');
@@ -30,6 +41,7 @@ function loadEnvFile() {
     console.log('No se encontro .env ni -env. Se usaran valores por defecto/env del sistema.');
 }
 
+assertSupportedNodeVersion();
 loadEnvFile();
 
 dayjs.extend(utc);
@@ -73,6 +85,9 @@ const GROUP_LIST_TIMEOUT_MS = Number(process.env.GROUP_LIST_TIMEOUT_MS || 20000)
 const GROUP_LIST_RETRIES = Number(process.env.GROUP_LIST_RETRIES || 2);
 const CLIENT_READY_WAIT_MS = Number(process.env.CLIENT_READY_WAIT_MS || 30000);
 const AUTO_LOG_GROUPS_ON_READY = (process.env.AUTO_LOG_GROUPS_ON_READY || 'false') === 'true';
+const ALLOW_GROUP_NAME_RESOLUTION =
+    (process.env.ALLOW_GROUP_NAME_RESOLUTION ||
+        (process.platform === 'win32' ? 'true' : 'false')) === 'true';
 
 const alreadySentMatchReminderKeys = new Set();
 let cachedGroupId = GROUP_ID;
@@ -349,6 +364,12 @@ async function getGroupChat() {
             );
             cachedGroupId = '';
         }
+    }
+
+    if (!ALLOW_GROUP_NAME_RESOLUTION) {
+        throw new Error(
+            'Resolucion por nombre deshabilitada. Configura WHATSAPP_GROUP_ID para este entorno.'
+        );
     }
 
     const chats = await client.getChats();
@@ -655,6 +676,13 @@ function scheduleMatchReminders() {
 }
 
 function scheduleBackgroundGroupResolver() {
+    if (!ALLOW_GROUP_NAME_RESOLUTION) {
+        console.log(
+            'Resolver en segundo plano desactivado: se requiere WHATSAPP_GROUP_ID en este entorno.'
+        );
+        return;
+    }
+
     cron.schedule(
         `*/${GROUP_RESOLVE_BACKGROUND_MINUTES} * * * *`,
         async () => {
@@ -693,12 +721,19 @@ client.on('qr', (qr) => {
 client.on('ready', () => {
     isClientReady = true;
     console.log('Bot conectado y listo.');
-    setTimeout(() => {
-        resolveAndCacheGroupId().catch((error) => {
-            console.warn('No se pudo resolver groupId al iniciar:', error.message);
-        });
-    }, 4000);
-    if (DEBUG_LIST_GROUPS || !cachedGroupId || AUTO_LOG_GROUPS_ON_READY) {
+    if (!cachedGroupId && ALLOW_GROUP_NAME_RESOLUTION) {
+        setTimeout(() => {
+            resolveAndCacheGroupId().catch((error) => {
+                console.warn('No se pudo resolver groupId al iniciar:', error.message);
+            });
+        }, 4000);
+    } else if (!cachedGroupId) {
+        console.warn(
+            'No hay WHATSAPP_GROUP_ID configurado y resolucion por nombre esta deshabilitada.'
+        );
+    }
+
+    if (ALLOW_GROUP_NAME_RESOLUTION && (DEBUG_LIST_GROUPS || !cachedGroupId || AUTO_LOG_GROUPS_ON_READY)) {
         printAvailableGroups().catch((error) => {
             console.error('No se pudieron listar los grupos:', error.message);
         });

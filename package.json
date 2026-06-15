@@ -9,7 +9,7 @@
     "awake": "node awake_script.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20 <24"
   },
   "dependencies": {
     "dayjs": "^1.11.13",

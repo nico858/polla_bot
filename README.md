@@ -9,7 +9,7 @@ Usa `whatsapp-web.js` (sin API de Meta de pago), con sesion via QR de WhatsApp W
 
 ## 1) Requisitos
 
-- Node.js 20+
+- Node.js 20 LTS (recomendado) o 22 LTS
 - Una cuenta de WhatsApp dedicada para el bot (recomendado)
 
 ## 2) Instalacion local
