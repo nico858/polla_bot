@@ -6,6 +6,17 @@ function resolveChromeExecutablePath() {
         return process.env.PUPPETEER_EXECUTABLE_PATH;
     }
 
+    const isWindows = process.platform === 'win32';
+    if (!isWindows) {
+        const linuxPaths = [
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable'
+        ];
+        return linuxPaths.find((exePath) => fs.existsSync(exePath));
+    }
+
     const localAppData = process.env.LOCALAPPDATA || '';
     const programFiles = process.env.PROGRAMFILES || 'C:\\Program Files';
     const programFilesX86 =
@@ -40,7 +51,8 @@ function resolveChromeExecutablePath() {
 
 const executablePath = resolveChromeExecutablePath();
 const isWindows = process.platform === 'win32';
-const headless = (process.env.BOT_HEADLESS || 'false').toLowerCase() === 'true';
+const defaultHeadless = isWindows ? 'false' : 'true';
+const headless = (process.env.BOT_HEADLESS || defaultHeadless).toLowerCase() === 'true';
 
 if (executablePath) {
     console.log(`Usando navegador local para Puppeteer: ${executablePath}`);
@@ -58,6 +70,7 @@ module.exports = {
     args: [
         '--disable-dev-shm-usage',
         '--no-first-run',
+        '--no-zygote',
         '--disable-gpu'
     ].concat(isWindows ? [] : ['--no-sandbox', '--disable-setuid-sandbox']),
     defaultViewport: null
