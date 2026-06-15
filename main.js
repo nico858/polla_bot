@@ -66,10 +66,14 @@ const MATCHES_DAYS_AHEAD = Number(process.env.MATCHES_DAYS_AHEAD || 7);
 const MATCHES_REFRESH_MINUTES = Number(process.env.MATCHES_REFRESH_MINUTES || 60);
 const MATCHES_FILE = path.join(__dirname, 'matches.json');
 const QR_VIEW_TOKEN = process.env.QR_VIEW_TOKEN || '';
-const SEND_MESSAGE_RETRIES = Number(process.env.SEND_MESSAGE_RETRIES || 1);
+const defaultSendRetries = process.platform === 'win32' ? 1 : 0;
+const SEND_MESSAGE_RETRIES = Number(process.env.SEND_MESSAGE_RETRIES || defaultSendRetries);
 const SEND_MESSAGE_RETRY_DELAY_MS = Number(process.env.SEND_MESSAGE_RETRY_DELAY_MS || 1500);
-const SEND_MESSAGE_ATTEMPT_TIMEOUT_MS = Number(
-    process.env.SEND_MESSAGE_ATTEMPT_TIMEOUT_MS || 8000
+const GROUP_ID_RESOLVE_TIMEOUT_MS = Number(
+    process.env.GROUP_ID_RESOLVE_TIMEOUT_MS || 10000
+);
+const SEND_MESSAGE_TIMEOUT_MS = Number(
+    process.env.SEND_MESSAGE_TIMEOUT_MS || (process.platform === 'win32' ? 8000 : 25000)
 );
 const MATCH_REMINDER_GRACE_MINUTES = Number(process.env.MATCH_REMINDER_GRACE_MINUTES || 2);
 const MAX_CONSECUTIVE_SEND_FAILURES = Number(
@@ -517,7 +521,7 @@ async function sendGroupMessage(message) {
                 new Promise((_, reject) =>
                     setTimeout(
                         () => reject(new Error('Timeout resolviendo groupId.')),
-                        SEND_MESSAGE_ATTEMPT_TIMEOUT_MS
+                        GROUP_ID_RESOLVE_TIMEOUT_MS
                     )
                 )
             ]);
@@ -527,7 +531,7 @@ async function sendGroupMessage(message) {
                 new Promise((_, reject) =>
                     setTimeout(
                         () => reject(new Error('Timeout enviando mensaje al grupo.')),
-                        SEND_MESSAGE_ATTEMPT_TIMEOUT_MS
+                        SEND_MESSAGE_TIMEOUT_MS
                     )
                 )
             ]);

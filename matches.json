@@ -5,7 +5,7 @@
     "away": "Brasil",
     "homeCode": "AR",
     "awayCode": "BR",
-    "kickoff": "2026-06-1513:30:00"
+    "kickoff": "2026-06-1513:45:00"
   },
   {
     "id": "ejemplo-002",
@@ -13,7 +13,7 @@
     "away": "Mexico",
     "homeCode": "CO",
     "awayCode": "MX",
-    "kickoff": "2026-06-15T13:35:00"
+    "kickoff": "2026-06-15T13:50:00"
   },
   {
     "id": "ejemplo-003",
@@ -21,6 +21,6 @@
     "away": "Alemania",
     "homeCode": "ES",
     "awayCode": "DE",
-    "kickoff": "2026-06-15T13:40:00"
+    "kickoff": "2026-06-15T13:55:00"
   }
 ]

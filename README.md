@@ -92,3 +92,15 @@ Para listar grupos con token:
 `https://tu-servicio.up.railway.app/groups?token=un_token_largo`
 
 Si `/groups` falla justo al arrancar, espera 20-40 segundos y vuelve a intentar.
+
+### Timeouts recomendados para Railway
+
+Si el grupo ya esta por `WHATSAPP_GROUP_ID` pero falla envio por timeout, usa:
+
+```env
+SEND_MESSAGE_RETRIES=0
+GROUP_ID_RESOLVE_TIMEOUT_MS=10000
+SEND_MESSAGE_TIMEOUT_MS=25000
+```
+
+En cloud, enviar mensaje puede tardar mas que en local; separar ambos timeouts evita falsos fallos.
